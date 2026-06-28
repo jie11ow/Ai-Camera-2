@@ -324,6 +324,47 @@ class SharedState:
 
 state = SharedState()
 
+# ===================== 鼠标按钮状态 =====================
+class ButtonState:
+    def __init__(self):
+        self.prev_clicked = False
+        self.next_clicked = False
+
+button_state = ButtonState()
+
+def mouse_callback(event, x, y, flags, param):
+    """鼠标点击回调：检测上一张/下一张按钮"""
+    if event == cv2.EVENT_LBUTTONDOWN:
+        h_disp, w_disp = 480, 640
+        btn_w, btn_h = 110, 38
+        # 上一张: 左侧
+        if 40 <= x <= 40 + btn_w and h_disp - 50 <= y <= h_disp - 50 + btn_h:
+            button_state.prev_clicked = True
+        # 下一张: 右侧
+        if w_disp - 40 - btn_w <= x <= w_disp - 40 and h_disp - 50 <= y <= h_disp - 50 + btn_h:
+            button_state.next_clicked = True
+
+def draw_buttons(frame, active=True):
+    """在画面底部绘制 上一张 / 下一张 按钮"""
+    h, w = frame.shape[:2]
+    btn_w, btn_h = 110, 38
+    x1, y1 = 40, h - 50           # 上一张
+    x2, y2 = w - 40 - btn_w, h - 50  # 下一张
+
+    overlay = frame.copy()
+    fill_color = (70, 70, 70) if active else (50, 50, 50)
+    border_color = (200, 200, 200) if active else (120, 120, 120)
+
+    for bx, by in [(x1, y1), (x2, y2)]:
+        cv2.rectangle(overlay, (bx, by), (bx + btn_w, by + btn_h), fill_color, -1)
+        cv2.rectangle(overlay, (bx, by), (bx + btn_w, by + btn_h), border_color, 2)
+
+    frame = cv2.addWeighted(overlay, 0.55, frame, 0.45, 0)
+    text_color = (240, 240, 240) if active else (150, 150, 150)
+    frame = pil_puttext(frame, "上一张", (x1 + 18, y1 + 8), text_color, 18)
+    frame = pil_puttext(frame, "下一张", (x2 + 18, y2 + 8), text_color, 18)
+    return frame
+
 def ai_worker():
     """后台 AI 线程：每隔 AI_INTERVAL_SEC 秒进行推理和分析"""
     while state.running:
@@ -360,9 +401,10 @@ def main():
     ai_thread = threading.Thread(target=ai_worker, daemon=True)
     ai_thread.start()
 
-    print("📷 AI 相机 (多线程版) | Q 退出 | S 拍照 | L 相册 | G 螺旋")
+    print("📷 AI 相机 (多线程版) | Q 退出 | S 拍照 | L 相册 | G 螺旋 | 鼠标点击按钮翻页")
     cv2.namedWindow('AI Camera', cv2.WINDOW_NORMAL)
     cv2.setWindowProperty('AI Camera', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    cv2.setMouseCallback('AI Camera', mouse_callback)
 
     # 局部变量
     frame_count = 0
@@ -415,6 +457,9 @@ def main():
             cv2.line(display_frame, (0, h//3), (w, h//3), (100,100,100), 1)
             cv2.line(display_frame, (0, 2*h//3), (w, 2*h//3), (100,100,100), 1)
 
+            # 绘制导航按钮（相机模式下灰色不可用）
+            display_frame = draw_buttons(display_frame, active=False)
+
             cv2.imshow('AI Camera', display_frame)
             frame_count += 1
 
@@ -423,13 +468,23 @@ def main():
                 black = np.zeros((480,640,3), dtype=np.uint8)
                 black = pil_puttext(black, "没有照片", (200,200), (255,255,255), 30)
                 black = pil_puttext(black, "按 L 返回", (200,240), (150,150,150), 20)
+                black = draw_buttons(black, active=False)
                 cv2.imshow('AI Camera', black)
             else:
                 img = cv2.imread(photo_list[current_photo_idx])
                 if img is not None:
                     img = cv2.resize(img, (640,480))
                     img = pil_puttext(img, f"{current_photo_idx+1}/{len(photo_list)}", (10,10), (255,255,255), 18)
+                    img = draw_buttons(img, active=True)
                     cv2.imshow('AI Camera', img)
+
+        # 处理鼠标按钮点击
+        if button_state.prev_clicked and view_mode == "gallery" and photo_list:
+            current_photo_idx = max(0, current_photo_idx - 1)
+        if button_state.next_clicked and view_mode == "gallery" and photo_list:
+            current_photo_idx = min(len(photo_list) - 1, current_photo_idx + 1)
+        button_state.prev_clicked = False
+        button_state.next_clicked = False
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'): break
@@ -451,7 +506,7 @@ def main():
                 view_mode="camera"
         elif key == ord('a') and view_mode=="gallery":
             if photo_list: current_photo_idx = max(0, current_photo_idx-1)
-        elif key == ord('d') and view_mode=="gallery":
+        elif key == ord('b') and view_mode=="gallery":
             if photo_list: current_photo_idx = min(len(photo_list)-1, current_photo_idx+1)
 
     state.running = False
