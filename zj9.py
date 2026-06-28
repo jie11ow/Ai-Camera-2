@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*
 
 import os, cv2, glob, time, json, hashlib, numpy as np, onnxruntime as ort, random, threading
 from PIL import Image, ImageDraw, ImageFont
