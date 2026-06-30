@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*1
+# -*- coding: utf-8 -*-
 
 import os, cv2, glob, time, json, hashlib, numpy as np, onnxruntime as ort, random, threading
 from PIL import Image, ImageDraw, ImageFont
@@ -8,15 +8,25 @@ from PIL import Image, ImageDraw, ImageFont
 MODEL_PATH   = '/home/abysm/camera/yolov8n.onnx'
 SCENE_MODEL  = '/home/abysm/camera/places365_resnet18.onnx'
 SCENE_MAP    = '/home/abysm/camera/places365_scene_mapping.json'
-CORPUS_PATH  = '/home/abysm/camera/corpus_interactive.json'   # 离线语料库（备用，代码中未强制使用）
 SAVE_DIR     = '/mnt/sdcard/photos/'
 CAMERA_INDEX = 20
 CONF_THRES   = 0.4
 IOU_THRES    = 0.45
-AI_INTERVAL_SEC = 0.6          # 后台推理间隔（秒）
+AI_INTERVAL_SEC = 0.6
 MAX_CAM_INDEX   = 25
 
-# ===================== 加载模型 (主线程中加载，子线程可直接使用) =====================
+# GPIO 按钮映射
+GPIO_BUTTONS = {
+    70: 's',   # 拍照
+    71: 'l',   # 相册
+    72: 'g',   # 黄金螺旋
+    73: 'q',   # 退出
+    91: 'a',   # 上一张
+    92: 'd',   # 下一张
+}
+BUTTON_ACTIVE_LOW = True
+
+# ===================== 加载模型 =====================
 session = ort.InferenceSession(MODEL_PATH)
 inp = session.get_inputs()[0]
 INPUT_NAME = inp.name
@@ -25,14 +35,12 @@ OUTPUT_NAMES = [o.name for o in session.get_outputs()]
 print(f"✅ 检测模型 {IMGSZ}x{IMGSZ}")
 
 scene_sess = ort.InferenceSession(SCENE_MODEL)
-scene_inp = scene_sess.get_inputs()[0]
 SCENE_IMGSZ = 224
 print(f"✅ 场景模型 {SCENE_IMGSZ}x{SCENE_IMGSZ} (Places365)")
 
 with open(SCENE_MAP) as f:
     scene_mapping = {int(k): v for k, v in json.load(f).items()}
 
-# COCO 80 类名
 CLASS_NAMES = [
     'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
     'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench',
@@ -85,7 +93,7 @@ def find_chinese_font():
         if os.path.exists(path): return path
     return None
 
-# ===================== AI 推理函数 (子线程调用) =====================
+# ===================== AI 推理 =====================
 def preprocess(img):
     h0, w0 = img.shape[:2]
     r = IMGSZ / max(h0, w0)
@@ -166,7 +174,7 @@ def classify_scene(img):
     pred_idx = np.argmax(out[0][0])
     return scene_mapping.get(pred_idx, "普通")
 
-# ===================== 构图规则 (子线程调用) =====================
+# ===================== 构图规则 =====================
 def detect_horizon(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 50, 150)
@@ -220,18 +228,13 @@ def check_color_balance(frame):
     return None
 
 def generate_hints(frame, detections, scene):
-    """根据构图规则和场景生成简单的文字提示（不依赖外部语料库）"""
     h, w = frame.shape[:2]
     hints = []
-    # 场景提示
     if scene != "普通":
         hints.append(f"当前场景：{scene}")
-    # 三分法主体偏移
     if detections:
         best = max(detections, key=lambda d: (d[2]-d[0])*(d[3]-d[1]))
-        x1, y1, x2, y2, _, _ = best
-        cx = (x1 + x2) / 2 / w
-        cy = (y1 + y2) / 2 / h
+        cx = (best[0]+best[2])/2/w; cy = (best[1]+best[3])/2/h
         if abs(cx-0.5)<0.12 and abs(cy-0.5)<0.12:
             hints.append("主体居中，可尝试偏移至三分线")
         else:
@@ -240,22 +243,17 @@ def generate_hints(frame, detections, scene):
             hints.append(f"主体偏{dh}{dv}，向三分线交点移动")
     else:
         hints.append("未检测到主体，请对准人物或景物")
-    # 水平线
     angle, ok = detect_horizon(frame)
     if ok and abs(angle) > 2.0:
         d = "顺时针" if angle > 0 else "逆时针"
         hints.append(f"地平线倾斜 {abs(angle):.1f}°，请{d}旋转")
-    # 头顶留白
     hm = check_headroom(frame, detections)
-    if hm:
-        hints.append("头顶空间" + ("过紧" if hm=="tight" else "过多"))
-    # 对称
+    if hm: hints.append("头顶空间" + ("过紧" if hm=="tight" else "过多"))
     sm = check_symmetry(frame)
     if sm: hints.append(sm)
-    # 色彩
     col = check_color_balance(frame)
     if col: hints.append("画面偏蓝" if col=="blue" else "画面偏红")
-    return hints[:3]   # 最多显示3条
+    return hints[:3]
 
 # ===================== PIL 文字 =====================
 def pil_puttext(img, text, position, color, font_size=22):
@@ -312,66 +310,65 @@ def open_camera():
         cap.release()
     return None
 
-# ===================== 全局共享状态 (线程安全) =====================
+# ===================== GPIO 驱动 =====================
+GPIO_LAST_STATE = {}
+
+def init_gpio():
+    for pin in GPIO_BUTTONS:
+        gpio_path = f"/sys/class/gpio/gpio{pin}"
+        if not os.path.exists(gpio_path):
+            try:
+                with open("/sys/class/gpio/export", "w") as f:
+                    f.write(str(pin))
+            except PermissionError:
+                print(f"⚠️ 无权限导出 GPIO {pin}，请以 root 运行或检查 udev 规则。")
+                continue
+            time.sleep(0.1)
+        try:
+            with open(f"/sys/class/gpio/gpio{pin}/direction", "w") as f:
+                f.write("in")
+        except:
+            pass
+        try:
+            with open(f"/sys/class/gpio/gpio{pin}/value", "r") as f:
+                GPIO_LAST_STATE[pin] = int(f.read().strip())
+        except:
+            GPIO_LAST_STATE[pin] = 1
+    print("✅ GPIO 按钮初始化完成。")
+
+def check_gpio_buttons():
+    for pin, func in GPIO_BUTTONS.items():
+        gpio_file = f"/sys/class/gpio/gpio{pin}/value"
+        try:
+            with open(gpio_file, "r") as f:
+                val = int(f.read().strip())
+        except:
+            continue
+        last = GPIO_LAST_STATE.get(pin, 1)
+        trigger = (last == 1 and val == 0) if BUTTON_ACTIVE_LOW else (last == 0 and val == 1)
+        GPIO_LAST_STATE[pin] = val
+        if trigger:
+            print(f"🔘 GPIO {pin} 按下，功能：{func}")
+            return func
+    return None
+
+# ===================== 全局状态 =====================
 class SharedState:
     def __init__(self):
         self.lock = threading.Lock()
         self.detections = []
         self.scene = "普通"
         self.hints = ["AI 引擎启动中..."]
-        self.latest_frame = None   # 子线程要处理的帧
+        self.latest_frame = None
         self.running = True
 
 state = SharedState()
 
-# ===================== 鼠标按钮状态 =====================
-class ButtonState:
-    def __init__(self):
-        self.prev_clicked = False
-        self.next_clicked = False
-
-button_state = ButtonState()
-
-def mouse_callback(event, x, y, flags, param):
-    """鼠标点击回调：检测上一张/下一张按钮"""
-    if event == cv2.EVENT_LBUTTONDOWN:
-        h_disp, w_disp = 480, 640
-        btn_w, btn_h = 110, 38
-        # 上一张: 左侧
-        if 40 <= x <= 40 + btn_w and h_disp - 50 <= y <= h_disp - 50 + btn_h:
-            button_state.prev_clicked = True
-        # 下一张: 右侧
-        if w_disp - 40 - btn_w <= x <= w_disp - 40 and h_disp - 50 <= y <= h_disp - 50 + btn_h:
-            button_state.next_clicked = True
-
-def draw_buttons(frame, active=True):
-    """在画面底部绘制 上一张 / 下一张 按钮"""
-    h, w = frame.shape[:2]
-    btn_w, btn_h = 110, 38
-    x1, y1 = 40, h - 50           # 上一张
-    x2, y2 = w - 40 - btn_w, h - 50  # 下一张
-
-    overlay = frame.copy()
-    fill_color = (70, 70, 70) if active else (50, 50, 50)
-    border_color = (200, 200, 200) if active else (120, 120, 120)
-
-    for bx, by in [(x1, y1), (x2, y2)]:
-        cv2.rectangle(overlay, (bx, by), (bx + btn_w, by + btn_h), fill_color, -1)
-        cv2.rectangle(overlay, (bx, by), (bx + btn_w, by + btn_h), border_color, 2)
-
-    frame = cv2.addWeighted(overlay, 0.55, frame, 0.45, 0)
-    text_color = (240, 240, 240) if active else (150, 150, 150)
-    frame = pil_puttext(frame, "上一张", (x1 + 18, y1 + 8), text_color, 18)
-    frame = pil_puttext(frame, "下一张", (x2 + 18, y2 + 8), text_color, 18)
-    return frame
-
 def ai_worker():
-    """后台 AI 线程：每隔 AI_INTERVAL_SEC 秒进行推理和分析"""
     while state.running:
         with state.lock:
             frame = state.latest_frame
-            if frame is not None:
-                frame = frame.copy()
+            if frame is not None: frame = frame.copy()
         if frame is not None:
             try:
                 dets = detect(frame)
@@ -385,9 +382,9 @@ def ai_worker():
                 print(f"AI 线程错误: {e}")
         time.sleep(AI_INTERVAL_SEC)
 
-# ===================== 主程序 (主线程) =====================
+# ===================== 主程序 =====================
 def main():
-    global state
+    init_gpio()
     cap = open_camera()
     if cap is None:
         print("❌ 未找到可用摄像头"); return
@@ -397,16 +394,13 @@ def main():
     if not os.path.exists(SAVE_DIR):
         os.makedirs(SAVE_DIR)
 
-    # 启动后台 AI 线程
     ai_thread = threading.Thread(target=ai_worker, daemon=True)
     ai_thread.start()
 
-    print("📷 AI 相机 (多线程版) | Q 退出 | S 拍照 | L 相册 | G 螺旋 | 鼠标点击按钮翻页")
+    print("📷 AI 相机 (GPIO版) | 物理按钮已启用")
     cv2.namedWindow('AI Camera', cv2.WINDOW_NORMAL)
     cv2.setWindowProperty('AI Camera', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    cv2.setMouseCallback('AI Camera', mouse_callback)
 
-    # 局部变量
     frame_count = 0
     show_spiral = False
     view_mode = "camera"
@@ -422,71 +416,54 @@ def main():
             raw_frame = frame.copy()
             display_frame = cv2.resize(frame, (640, 480))
 
-            # 将当前帧提供给 AI 线程
             with state.lock:
                 state.latest_frame = display_frame.copy()
-                # 读取最新结果
                 detections = state.detections
                 scene = state.scene
                 hints = state.hints
 
-            # 更新显示用的场景和提示（如果为空则沿用上一次的）
             if hints and hints[0] != "AI 引擎启动中...":
-                last_scene = scene
-                last_hints = hints
+                last_scene = scene; last_hints = hints
             else:
-                scene = last_scene
-                hints = last_hints
+                scene = last_scene; hints = last_hints
 
-            # 可选：黄金螺旋
             if show_spiral:
                 display_frame = draw_golden_spiral(display_frame)
 
-            # 叠加文字（浅灰色，无背景）
-            display_frame = pil_puttext(display_frame, f'场景: {scene}', (10, 10),
-                                        (220, 220, 220), 20)
+            display_frame = pil_puttext(display_frame, f'场景: {scene}', (10,10), (220,220,220), 20)
             y_off = 35
             for hint in hints[:3]:
-                display_frame = pil_puttext(display_frame, hint, (10, y_off), (200, 200, 200), 17)
+                display_frame = pil_puttext(display_frame, hint, (10, y_off), (200,200,200), 17)
                 y_off += 22
 
-            # 三分线参考线
             h, w = display_frame.shape[:2]
-            cv2.line(display_frame, (w//3, 0), (w//3, h), (100,100,100), 1)
-            cv2.line(display_frame, (2*w//3, 0), (2*w//3, h), (100,100,100), 1)
-            cv2.line(display_frame, (0, h//3), (w, h//3), (100,100,100), 1)
-            cv2.line(display_frame, (0, 2*h//3), (w, 2*h//3), (100,100,100), 1)
-
-            # 绘制导航按钮（相机模式下灰色不可用）
-            display_frame = draw_buttons(display_frame, active=False)
+            cv2.line(display_frame, (w//3,0), (w//3,h), (255,255,255),2)
+            cv2.line(display_frame, (2*w//3,0), (2*w//3,h), (255,255,255),2)
+            cv2.line(display_frame, (0,h//3), (w,h//3), (255,255,255),2)
+            cv2.line(display_frame, (0,2*h//3), (w,2*h//3), (255,255,255),2)
 
             cv2.imshow('AI Camera', display_frame)
             frame_count += 1
 
-        else:  # 相册模式
+        else:  # 相册
             if not photo_list:
                 black = np.zeros((480,640,3), dtype=np.uint8)
                 black = pil_puttext(black, "没有照片", (200,200), (255,255,255), 30)
                 black = pil_puttext(black, "按 L 返回", (200,240), (150,150,150), 20)
-                black = draw_buttons(black, active=False)
                 cv2.imshow('AI Camera', black)
             else:
                 img = cv2.imread(photo_list[current_photo_idx])
                 if img is not None:
                     img = cv2.resize(img, (640,480))
                     img = pil_puttext(img, f"{current_photo_idx+1}/{len(photo_list)}", (10,10), (255,255,255), 18)
-                    img = draw_buttons(img, active=True)
+                    img = pil_puttext(img, "A 上一张 | D 下一张 | L 返回", (10,440), (200,200,200), 20)
                     cv2.imshow('AI Camera', img)
 
-        # 处理鼠标按钮点击
-        if button_state.prev_clicked and view_mode == "gallery" and photo_list:
-            current_photo_idx = max(0, current_photo_idx - 1)
-        if button_state.next_clicked and view_mode == "gallery" and photo_list:
-            current_photo_idx = min(len(photo_list) - 1, current_photo_idx + 1)
-        button_state.prev_clicked = False
-        button_state.next_clicked = False
-
         key = cv2.waitKey(1) & 0xFF
+        gpio_key = check_gpio_buttons()
+        if gpio_key is not None:
+            key = ord(gpio_key)
+
         if key == ord('q'): break
         elif key == ord('s') and view_mode=="camera":
             if raw_frame is not None:
@@ -494,8 +471,7 @@ def main():
                 path = os.path.join(SAVE_DIR, f"photo_{ts}.jpg")
                 cv2.imwrite(path, raw_frame)
                 print(f"💾 {path}")
-        elif key == ord('g'):
-            show_spiral = not show_spiral
+        elif key == ord('g'): show_spiral = not show_spiral
         elif key == ord('l'):
             if view_mode=="camera":
                 view_mode="gallery"
@@ -506,7 +482,7 @@ def main():
                 view_mode="camera"
         elif key == ord('a') and view_mode=="gallery":
             if photo_list: current_photo_idx = max(0, current_photo_idx-1)
-        elif key == ord('b') and view_mode=="gallery":
+        elif key == ord('d') and view_mode=="gallery":
             if photo_list: current_photo_idx = min(len(photo_list)-1, current_photo_idx+1)
 
     state.running = False
