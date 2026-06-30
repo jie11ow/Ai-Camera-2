@@ -1,0 +1,70 @@
+{
+  "portrait": {
+    "headroom_tight": [
+      "{main_subject}的头顶空间不足，请向下移动相机，让{main_subject}的眼睛落在上三分线。",
+      "头部离上缘太近了，给{main_subject}留一点呼吸感吧。"
+    ],
+    "headroom_loose": [
+      "{main_subject}上方留白过多，可向上移动镜头，让{main_subject}更突出。",
+      "头顶太空了，把{main_subject}放在更靠上的位置。"
+    ],
+    "centered": [
+      "{main_subject}正好在画面正中，试试把它移到{target_third}，结合{secondary_object}打破对称。",
+      "中心构图虽稳，但将{main_subject}偏移到{target_third}会让画面更生动。"
+    ],
+    "off_third": [
+      "{main_subject}目前在{position_desc}，请向{move_direction}移动相机，让它靠近{target_third}。",
+      "把{main_subject}放到{target_third}的位置，同时注意{secondary_object}的搭配。"
+    ],
+    "scene_general": [
+      "人像模式：让{main_subject}成为画面的绝对主角，背景可以适当虚化。"
+    ]
+  },
+  "landscape": {
+    "scene_general": [
+      "风光模式：让地平线保持水平，把{foreground_element}放在前景，增加空间感。"
+    ]
+  },
+  "city": {
+    "scene_general": [
+      "城市街拍：利用建筑线条引导视线，可以把{main_subject}放在{target_third}。"
+    ]
+  },
+  "food": {
+    "scene_general": [
+      "美食模式：45°俯拍{main_subject}，侧光可以让纹理更诱人。"
+    ]
+  },
+  "night": {
+    "scene_general": [
+      "夜景下请稳定相机，注意寻找{foreground_element}作为画面的亮点。"
+    ]
+  },
+  "common": {
+    "horizon_tilt": [
+      "地平线倾斜了{angle}°，请{rotate_direction}旋转相机。",
+      "海平面歪了，{rotate_direction}调整一下，同时注意{foreground_element}的位置。"
+    ],
+    "clutter": [
+      "画面有些杂乱，建议靠近{main_subject}，减少{secondary_object}的干扰。"
+    ],
+    "too_big": [
+      "{main_subject}占画面太大，后退一点让{secondary_object}也露个脸。"
+    ],
+    "too_small": [
+      "{main_subject}太小了，走近一些，让{main_subject}充满画面。"
+    ],
+    "symmetry": [
+      "完美的对称！{main_subject}和{secondary_object}形成了镜像，可以保持这种平衡感。"
+    ],
+    "color_blue": [
+      "色调偏冷，适当提高色温，让{main_subject}色彩更真实。"
+    ],
+    "color_red": [
+      "画面偏红，降低一点色温，{main_subject}会看起来更自然。"
+    ],
+    "no_subject": [
+      "相机没找到明显主体，试试对准一个{scene}场景中感兴趣的东西。"
+    ]
+  }
+}

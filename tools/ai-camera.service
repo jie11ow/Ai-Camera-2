@@ -1,0 +1,12 @@
+[Unit]
+Description=AI Camera Autostart
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/home/abysm/camera/start_ai_camera.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
