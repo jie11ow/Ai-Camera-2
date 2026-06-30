@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bas
 
 # 设置显示输出
 export DISPLAY=:0
